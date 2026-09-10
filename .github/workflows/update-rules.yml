@@ -1,0 +1,71 @@
+name: Update Adobe Reject Rule Set
+
+on:
+  schedule:
+    # 每天 UTC 06:30 运行一次（对应北京时间 14:30）
+    - cron: "30 6 * * *"
+  workflow_dispatch: {}   # 支持在 Actions 页面手动触发
+  push:
+    paths:
+      - "scripts/generate_rule.py"
+      - ".github/workflows/update-rules.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-rules
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v5
+
+      - name: 下载上游域名列表
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/ignaciocastro/a-dove-is-dumb/main/pihole.txt" \
+            -o source.txt
+          wc -l source.txt
+
+      - name: 设置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: 生成 adobe-reject.json
+        run: |
+          mkdir -p rules
+          python3 scripts/generate_rule.py source.txt rules/adobe-reject.json
+
+      - name: 安装 sing-box
+        run: |
+          curl -fsSL https://sing-box.app/install.sh | sh
+          sing-box version
+
+      - name: 编译 adobe-reject.srs
+        run: |
+          sing-box rule-set compile \
+            --output rules/adobe-reject.srs \
+            rules/adobe-reject.json
+
+      - name: 检查改动
+        id: diff
+        run: |
+          git add -A rules/adobe-reject.json rules/adobe-reject.srs
+          if git diff --staged --quiet -- rules/adobe-reject.json rules/adobe-reject.srs; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 提交并推送
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: 自动更新 adobe-reject 规则集 $(date -u +'%Y-%m-%d')"
+          git push
